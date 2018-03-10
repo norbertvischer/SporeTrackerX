@@ -1,4 +1,4 @@
-//10.03.18 12:59 --
+//10.03.18 12:59 --====
 //24.11.17 19:46
 //SporeTrackerX1.1a.txt
 //disabled sign for germination and test-command for that
