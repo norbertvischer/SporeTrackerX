@@ -1,62 +1,75 @@
-//10.03.18 12:59 --====
-//24.11.17 19:46
-//SporeTrackerX1.1a.txt
-//disabled sign for germination and test-command for that
-var
-	brightThr1=0, //0 = automatic; for slice=1
-	brightThr2=0, //0 = automatic; for slice>=2
-	darkThr=0,//0 = automatic; 
-	neighborDist = 4,// neighbors ignored if closer than: default = 4 um
-	jumpTolerance = 20,//pixels, handling frame-to-frame movement
+//SporeTrackerX
+//18.03.18 10:06
+var //====== user-defined variables
+	brightFactor = 0.4,//threshold in slice=1 :  default = 0.4 *upperRange;
+	stillBrightFactor = 0.2,//threshold in slice>1:  default = 0.2 *upperRange;
+	brightThr=0, //use value>0 to set fixed threshold and ignore brightFactor
+	stillBrightThr=0, //use value>0 to set fixed threshold and ignore stillBrightFactor
+	darkThr="Default", //thresholding dark particles, auto (e.g. "Default") or fixed  number
+	neighborDist = 4, // neighbors ignored if closer than: default = 4 um
+	jumpTolerance = 20, // acceptance frame-to-frame movement, default = 20 pixels
 	startArea = 2.5, //log(2) area for measuring TD, default = 2.5  (2^2.5 = 5.6 um^2)
 	minStopArea = 3, //log(2) area for measuring TD, default = 3 (2^3 = 8 um^2)
-	minParticle = 12, //smaller particles are ignored, default = 12 pixel
-	pTitles=split("Growth Germination"),
-	xxg, yyg, //global arrays
-	signNames =     split("Burst    FirstDiv  T1     T2 Germ"),
+	minParticleB = 60, //smaller bright particles are ignored, default = 60 pixel
+	minParticleD = 120, //smaller dark particles are ignored, default = 120 pixel
+	peakRad = 4, //radius to average a peak's top intensity, default = 4 pixel
+	plotTitles=split("Growth Germination"),
+	signNames = split("Burst    FirstDiv  T1     T2 Germ"),
 	lGray = 0xdddddd, white = 0xffffff, slopeColor = 0xccffcc,
 	burstColor = 0xee9900, firstDivColor = 0x889900, t1Color= 0x00aa00, t2Color = 0x00aa00,
 	signColors = newArray(burstColor, firstDivColor, t1Color, t2Color),
+	autoBurst = true,//auto-detect burst
+	afterBrightCircles = 15,//use circular roi n frames after transition, default=15  
+	afterBrightGrays = 50,//record intensity  n frames after transition, default=50
+	xLimit = 300, //minutes plot range
+	yLimitArea = 6, // plot range for growth,  default = 6  (2^6 = 64 um^2)
+	yLimitGray = 65000, // plot range intensity,
+
 	n_debug = false,
-	;
 	
 macro "Analyze Spores [F1]"{
-	if(n_debug)
-		debug;
+	requires("1.51v");
+	ojRequires("1.04f");
+	if(n_debug) debug;
 	deleteAll = false;
+	ojSetVirtualFlag(true);
 	if(ojNObjects() > 0)
 		deleteAll = getBoolean("Delete all " + ojNObjects() + " Objects?", "Delete All", "Process unmarked images");
 	if(deleteAll)
 		ojDeleteAllObjects();
 	startObjects = ojNObjects();
 	targetFlag = true;//a kind of batchMode for objects
-	ojRequires("1.04a");
 	if(ojNObjects() == 0)
 		initColumns();
-	frameInterval = ojGetImageValue(1, "frameinterval");
 	
 	nChannels = ojGetImageValue(1, "channels");
 	run("Clear Results");
 	roiManager("reset");
 	print("\\Clear");
 	startTime = getTime;
-	run("Set Measurements...", "area mean centroid feret's stack add decimal=3");
-	//ojDeleteAllObjects();
-	openAllVirtually();
+	run("Set Measurements...", "area mean centroid");
+	openAllVirtually();//17.03.18 0:10
 	nLinkedImgs = ojNImages();
 	nd2Names = newArray(nLinkedImgs);
 	prepTimes = newArray(nLinkedImgs);
 	for(img = 1; img <= ojNImages(); img++){
+		frameInterval = ojGetImageValue(1, "frameinterval");
+		frames = ojGetImageValue(1, "frames");
+		if(frames == 1) 
+			exit("Hyperstack Error: nFrames == 1");
+		if(frameInterval != ojGetImageValue(img, "frameinterval"))
+			print("Error: frame interval not constant");
+		maxRois = 0;//so we can judge number of of noise particles
 		if(ojFirstObject(img) <= 0){
-			showProgress(-img/ojNImages());
+			showProgress(-img/ojNImages() + 0.01);
 			ojShowImage(img);
 			if(!n_debug)
 				setBatchMode("hide"); 
 			evalMetadata(img - 1, nd2Names, prepTimes);
 
-	//First frame only:
-	//put spore properties into columns
-	//prepare pair arrays to be filled in subsequent frames
+//=== Frame #1 only ===
+//put spore properties into result columns
+//prepare pair arrays to be filled in subsequent frames
 			setSlice(1);
 			run("Select None");
 			run("Remove Overlay");
@@ -66,19 +79,20 @@ macro "Analyze Spores [F1]"{
 			mode =  List.getValue("Mode");
 			mean =  List.getValue("Mean");
 			max =  List.getValue("Max");
-			if(brightThr1 == 0)//prepare pass 1 (bright particles)
-				thisThr1 = mode + 0.4 * (max- mode);
+			upperRange = max- mode;
+			if(brightThr == 0)//automatic
+				isBright = mode + brightFactor * upperRange;
 			else
-				thisThr1 = brightThr1;
-			if(brightThr2 == 0)
-				thisThr2 = mode + 0.2 * (max- mode);
+				isBright = brightThr;//user defined
+			if(stillBrightThr == 0)//automatic
+				stillBright = mode + stillBrightFactor * upperRange;
 			else
-				thisThr2 = brightThr2;
+				stillBright = stillBrightThr;//user defined
 			getPixelSize(dummy, pxWidth, dummy);
-			objIndexes = "";
-			setThreshold(thisThr1, 1e6);
+			objIndexes = "";//growing string
+			setThreshold(isBright, 1e6);
 
-			run("Analyze Particles...", "size=&minParticle-Infinity pixel display exclude clear include add slice");
+			run("Analyze Particles...", "size=&minParticleB-Infinity pixel display exclude clear include add slice");
 			print(getTitle);
 			removeNeighbors();
 			nSpores = nResults;//spores in first slice
@@ -88,7 +102,8 @@ macro "Analyze Spores [F1]"{
 			currentY = newArray(nSpores);
 			areaPairs = newArray(nSpores);
 			grayPairs = newArray(nSpores);
-			lifeStage = newArray(nSpores);//0=bright, 1 = dark, 2=lost
+			lifeStage = newArray(nSpores);
+			BRIGHT=0; DARK=1; LOST=2;//life stages
 		
 			for(spore = 0; spore < nSpores; spore++){ 
 				currentX[spore] = getResult("X", spore)/pxWidth;
@@ -102,146 +117,177 @@ macro "Analyze Spores [F1]"{
 				ojSetResult("nd2Name", thisObj, nd2Names[img-1]);
 				ojSetResult("File", thisObj, getTitle);
 				ojSetResult("prepTime", thisObj, prepTimes[img-1]);
+				ojSetResult("x", thisObj, currentX[spore]);
+				ojSetResult("y", thisObj, currentY[spore]);
 				objIndexes += " " + thisObj;
-			
-
-				makeOval(currentX[spore] -4, currentY[spore] -4, 8, 8);//measure gray value
+				makeOval(currentX[spore] -peakRad, currentY[spore] -peakRad, peakRad*2, peakRad*2);//measure gray value
 				getRawStatistics(area, gray);
 				grayPairs[spore] = "0 " + d2s(gray, -3) + ";";// first starts with frame: t= 0
-				//areaPairs[spore] = "";
 			}
-			objIndexes = split(objIndexes);
+			objIndexes = split(objIndexes);//strings
 			for(jj = 0; jj < objIndexes.length; jj++){
-				objIndexes[jj] = parseInt(objIndexes[jj]);
+				objIndexes[jj] = parseInt(objIndexes[jj]);//numbers
 			}	
 			nFrames = nSlices/nChannels;
 			chn = 1;
 
-	//Remaining frames:
-	//- in each frame, analyze  bright  particles, 
-	//- then dark particles, re-identify per frame.
-	//- update 'lifeStage' status per spore: 1=bright, 2=dark, 3=lost
+//====== Frame >= 2  
+//- analyze  bright  particles, 
+//- analyze dark particles, 
+// -re-identify per frame.
+//- update 'lifeStage' status per spore BRIGHT, DARK or LOST
+			prevArea = newArray(ojNObjects());//detect abrupt growth or shrink
 			for(frame = 2; frame <= nFrames; frame++){//value pairs per spore
 				slc = (frame - 1) * nChannels + chn;
 				frameTime = (frame -1) * frameInterval;//start with time=0
 
-				if(is("Caps Lock Set")){
+				if(is("Caps Lock Set")){ //handle controlled interrupt
 					stopTime = getTime;
 					ojSetTool(0);
-					run("View 100%");
-					//wasBatch = is("Batch Mode");
-					//setBatchMode("exit and display");//risky
-				
+					run("View 100%");				
 					id = getImageID;
-					selectImage(id);//03.07.17 17:46
+					selectImage(id);
 					if(!n_debug)
-						setBatchMode("show");//03.07.17 17:45
-				
-				
+						setBatchMode("show");
 					if(targetFlag) 
 						ojSetTarget("exit");
 					waitForUser("Caps Lock is down for inspection.\n \nPress 'Esc' to abort.\nClick 'OK' to continue.");
 					startTime += getTime - stopTime;
 					ojShowImage(img);
-					selectImage(id);//03.07.17 17:46
+					selectImage(id);
 					if(!n_debug)
-						setBatchMode("hide");//03.07.17 17:45
-
-				//setBatchMode(wasBatch);//risky
+						setBatchMode("hide");
 				}
-				showProgress(frame/nFrames);
+				
+				showProgress(-frame/nFrames);
 				setSlice(slc);
 				if(targetFlag) ojSetTarget("image=" + img);
 				if(targetFlag) ojSetTarget("slice=" + slc);
+				
+				//======  Bright Particles in Frame >= 2
+				setThreshold(stillBright, 1e6);
+				roiManager("reset");
+				run("Select None");
 
-				BRIGHT = 1; DARK=2; 
-				for(pass = BRIGHT; pass <= DARK; pass++){
-					if(pass == BRIGHT)
-						setThreshold(thisThr2, 1e6);
-
-					if(pass == DARK)
-						if(darkThr == 0)
-							setAutoThreshold("Default");
-						else
-							setThreshold(0, darkThr);
-						
-					roiManager("reset");
-					run("Select None");
-
-					run("Analyze Particles...", "size=40-Infinity pixel display exclude clear include add slice");
-					resetThreshold;
-					nRois = nResults;
-					roisX = newArray(nRois);
-					roisY = newArray(nRois);
-					for(jj = 0; jj < nRois; jj++){ 
-						roisX[jj] = getResult("X", jj)/pxWidth;
-						roisY[jj] = getResult("Y", jj)/pxWidth;
-					}
-
-					for(spore = 0; spore < nSpores; spore++){ 
-						thisMean = 0; 
-						if(pass == BRIGHT && lifeStage[spore] == 0){ 
-							minDist = 9999;
-							closestRoi = -1;
-							for(roi = 0; roi<nRois; roi++){                   //// Roi
-								dist = sqrt(pow(roisX[roi] - currentX[spore], 2) + pow(roisY[roi] - currentY[spore], 2));
-								if (dist < minDist && dist < jumpTolerance){
-									minDist = dist;
-									closestRoi = roi;
-								}
-							}
-							if(closestRoi >= 0){//found bright
-								currentX[spore] = roisX[closestRoi];
-								currentY[spore] = roisY[closestRoi];
-								makeOval(currentX[spore] -4, currentY[spore] -4, 8, 8);//measure gray value
-								getRawStatistics(area, thisMean);
-								run("Select None");
-								grayPairs[spore] = grayPairs[spore] + "" + d2s(frameTime, -3) + " " + d2s(thisMean, -3) + ";";							
-							}
-							else if(lifeStage[spore] == 0){
-								lifeStage[spore] =1; //bright-dark transition
-								//areaPairs[spore] = "";// kill previous areas
+				run("Analyze Particles...", "size=&minParticleB-Infinity pixel display exclude clear include add slice");
+				resetThreshold;
+				nRois = nResults;
+				maxRois = maxOf(maxRois, nRois);
+				roisX = newArray(nRois);
+				roisY = newArray(nRois);
+				for(jj = 0; jj < nRois; jj++){ 
+					roisX[jj] = getResult("X", jj)/pxWidth;
+					roisY[jj] = getResult("Y", jj)/pxWidth;
+				}
+				for(spore = 0; spore < nSpores; spore++){ 
+					if(lifeStage[spore] == BRIGHT){ 
+						minDist = 9999;
+						closestRoi = -1;
+						for(roi = 0; roi<nRois; roi++){                   
+							dist = sqrt(pow(roisX[roi] - currentX[spore], 2) + pow(roisY[roi] - currentY[spore], 2));
+							if (dist < minDist && dist < jumpTolerance){
+								minDist = dist;
+								closestRoi = roi;
 							}
 						}
+						if(closestRoi >= 0){//found bright
+							currentX[spore] = roisX[closestRoi];
+							currentY[spore] = roisY[closestRoi];
+							makeOval(currentX[spore] -peakRad, currentY[spore] -peakRad, peakRad*2, peakRad *2);//measure gray value
+							getRawStatistics(area, thisMean);//sample intensity
+							run("Select None");
+							grayPairs[spore] = grayPairs[spore] + "" + d2s(frameTime, -3) + " " + d2s(thisMean, -3) + ";";	//store array as text 						
 
-						if(pass == DARK && lifeStage[spore] == 1){ 
-							minDist = 9999;
-							closestRoi = -1;
-							for(roi = 0; roi<nRois; roi++){                   //// Roi
-								dist = sqrt(pow(roisX[roi] - currentX[spore], 2) + pow(roisY[roi] - currentY[spore], 2));
-								if (dist < minDist && dist < jumpTolerance){
-									minDist = dist;
-									closestRoi = roi;
-								}
-							}
-							if(closestRoi >= 0){
-								currentX[spore] = roisX[closestRoi];
-								currentY[spore] = roisY[closestRoi];
-								roiManager("select", closestRoi);
-								run("Interpolate", "interval=3 smooth");
-								if(selectionType != -1){
-									obj= objIndexes[spore];
-									ojOpenObject(obj);
-									ojSwitchToItem("Contour");
-									ojRoiToItem();
-									ojCloseObject();
+							obj= objIndexes[spore];
+							ojOpenObject(obj);
+							ojSwitchToItem("Bright");
+							ojSetMarker(currentX[spore], currentY[spore]);
+							ojCloseObject();	
+													}
+						else if(lifeStage[spore] == BRIGHT){
+							lifeStage[spore] = DARK; //bright-dark transition
+						}
+					}
+				}
+
+				//======  Dark Particles in Frame >= 2
+				if(isNaN(parseInt(darkThr)))
+					setAutoThreshold(darkThr);//string for auto-threshold, e.eg. "Default"
+				else
+					setThreshold(0, darkThr);//number for fixed threshold
 					
-									area = getResult("Area", closestRoi);
-									slice = getResult("Slice", closestRoi);
-									if(thisMean == 0){
-										thisMean = getResult("Mean", closestRoi);
-										grayPairs[spore] = grayPairs[spore] + "" + d2s(frameTime, -3) + " " + d2s(thisMean, -3) + ";";
-									}							
-									thisPair = d2s(frameTime, -3) + " " + d2s(area, -3)+ ";";
-									areaPairs[spore] = "" + areaPairs[spore] + thisPair;
+				roiManager("reset");
+				run("Select None");
 
-								}
+				run("Analyze Particles...", "size=&minParticleD-Infinity pixel display exclude clear include add slice");
+				resetThreshold;
+				nRois = nResults;
+				maxRois = maxOf(maxRois, nRois);
+				roisX = newArray(nRois);
+				roisY = newArray(nRois);
+				for(jj = 0; jj < nRois; jj++){ 
+					roisX[jj] = getResult("X", jj)/pxWidth;
+					roisY[jj] = getResult("Y", jj)/pxWidth;
+				}
+
+				for(spore = 0; spore < nSpores; spore++){ 
+					if(lifeStage[spore] == DARK){ 
+						minDist = 9999;
+						closestRoi = -1;
+						for(roi = 0; roi<nRois; roi++){
+							dist = sqrt(pow(roisX[roi] - currentX[spore], 2) + pow(roisY[roi] - currentY[spore], 2));
+							if (dist < minDist && dist < jumpTolerance){
+								minDist = dist;
+								closestRoi = roi;
 							}
-							else if(lifeStage[spore] == 1)
-								lifeStage[spore] =2; //end of tracing
 						}
+						if(closestRoi >= 0){
+							currentX[spore] = roisX[closestRoi];
+							currentY[spore] = roisY[closestRoi];
+							roiManager("select", closestRoi);
+							run("Interpolate", "interval=3 smooth");
+							if(selectionType != -1){
+								obj= objIndexes[spore];
+								ojSelectObject(obj);
+								nBrights = ojNItems("Bright");
+
+							
+								area = getResult("Area", closestRoi);
+								prevA = prevArea[obj-1];
+								growth = area/prevA;
+								if(prevA > 10 && (growth < 0.9 || growth > 1.2)){//no size jump above 10 um^2
+									lifeStage[spore] =LOST; 
+									continue;
+								}
+								prevArea[obj-1] = area;	
+								
+								
+								
+								ojOpenObject(obj);
+								ojSwitchToItem("Contour");
+								ojRoiToItem();
+								ojCloseObject();
+				
+								transitionFinished = (frame > nBrights + afterBrightCircles);
+								collectionFinished = (frame > nBrights + afterBrightGrays);
+								if(!transitionFinished || !collectionFinished){
+									if(!transitionFinished){
+										makeOval(currentX[spore] -peakRad, currentY[spore] -peakRad, peakRad*2, peakRad *2);//measure gray value				
+										getRawStatistics(dummyArea, thisMean);
+									}
+									else
+										thisMean = getResult("Mean", closestRoi);
+									grayPairs[spore] = grayPairs[spore] + "" + d2s(frameTime, -3) + " " + d2s(thisMean, -3) + ";";
+								}
+								thisPair = d2s(frameTime, -3) + " " + d2s(area, -3)+ ";";
+								areaPairs[spore] = "" + areaPairs[spore] + thisPair;
+
+							}
+						}
+						else if(lifeStage[spore] == DARK)
+							lifeStage[spore] =LOST; //end of tracing
 					}
-				}	
+				}
 				roiManager("reset");	
 			}//for (frame= ...
 		
@@ -261,15 +307,17 @@ macro "Analyze Spores [F1]"{
 			makeCollectivePlot(1, img);
 			makeCollectivePlot(0, img);	
 		}//if ojFirstObject <= 0
+		print("maxRois = ", maxRois);//indicate excessive noise particles
 	}// for (img=1
 	setBatchNumbers();
 	beep;
 	showMessage(" " + (ojNObjects() - startObjects) + " spores analyzed in " + d2s((getTime - startTime)/60e3, 1) + " min");
 	makeCollectivePlot(1, -1);
 	makeCollectivePlot(0, -1);	
-}/////////End Analyze Spores
+	close("Results");
+}//===== End Analyze Spores
 
-//Re-builds two collective plots using 'pairs' and manual entries in ObjectJ Results
+//Re-builds two collective plots using 'pairs' with manual entries in ObjectJ Results
 macro "Plot Growth and Germination [F2]"{
 	makeCollectivePlot(1, -1);//-1 = include all images
 	makeCollectivePlot(0, -1);
@@ -287,30 +335,34 @@ function openAllVirtually(){
 
 //If image is stack and not virtual, it first is closed
 function openVirtually(img){
-	prPath = ojGetProjectPath();
-	title = ojGetImageName(img);
-	if (isOpen(title)){
-		selectImage(title);
-		if(is("Virtual Stack") || nSlices==1)
-			return;
-		else
-			close;
-	}	
-	arg = "open=[" + prPath + title + "]";
-	run("TIFF Virtual Stack...", arg);
-	run("Select None");
-	if(bitDepth == 16)
-		setMinAndMax(0, 30000);
+	ojSetVirtualFlag(true);
+	ojShowImage(img);
+	return;///////17.03.18 16:12
+// 	
+// 	prPath = ojGetProjectPath();
+// 	title = ojGetImageName(img);
+// 	if (isOpen(title)){
+// 		selectImage(title);
+// 		if(is("Virtual Stack") || nSlices==1)
+// 			return;
+// 		else
+// 			close;
+// 	}	
+// 	arg = "open=[" + prPath + title + "]";
+// 	run("TIFF Virtual Stack...", arg);
+// 	run("Select None");
+// 	if(bitDepth == 16)
+// 		setMinAndMax(0, 30000);
 }
 
 //Create new Plot-Stack if img==1, otherwise append plots to existing stack.
 function makeCollectivePlot(plot, img){//all images if img=-1
 	setFont("SansSerif", 12, "antiliased bold");
-	yMaxLimits = newArray(6, 65000);
+	yMaxLimits = newArray(yLimitArea, yLimitGray);
 	legends = split("log(2, Area [um]);Brightness", ";");
 	if(!n_debug)
 		setBatchMode(true);
-	title = pTitles[plot];	
+	title = plotTitles[plot];	
 	if(img > 0){
 		firstObj = ojFirstObject(img);
 		lastObj = ojLastObject(img);
@@ -327,17 +379,23 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 		q = ojResult("Q", obj);
 		if(isNaN(q) || q !=0)
 			ojSetResult("Q", obj, 1);
-		showProgress((obj - firstObj)/(lastObj - firstObj));
-		if(pTitles[plot] == "Growth"){
-			extractPairs("AreaPairs", obj);
-			for(jj= 0; jj< yyg.length; jj++)
-				yyg[jj] = log(yyg[jj])/log(2);
+		if(plot == 0){//"Growth"
+		//if(plotTitles[plot] == "Growth"){						
+			xx = extractArray("AreaPairs", obj, 0);
+			yy = extractArray("AreaPairs", obj, 1);
+
+			for(jj= 0; jj< yy.length; jj++)
+				yy[jj] = log(yy[jj])/log(2);
 		}
-		if(pTitles[plot] == "Germination")
-			extractPairs("GrayPairs", obj);
-		len = xxg.length;
+		//if(plotTitles[plot] == "Germination"){
+		if(plot == 1){ // "Germination"
+			xx = extractArray("GrayPairs", obj, 0);
+			yy = extractArray("GrayPairs", obj, 1);
+
+		}
+		len = xx.length;
 		yMax= yMaxLimits[plot];
-		onePlotToClip(xxg, yyg);//puts plot to clipboard
+		onePlotToClip(xx, yy);//puts plot to clipboard
 		if(obj == 1){
 			run("Add Slice");
 			run("Delete Slice");
@@ -387,10 +445,10 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 	setOption("Changes", false);
 }
 
-//Calculates TD from manual or automatic time window, paint slope
+//Calculates doubling times TD of all objects
 function calcAndPaintAllTDs(){
 	for(obj = 1; obj <= ojNObjects(); obj++){
-		showProgress(obj/ojNObjects());
+		//showProgress(obj/ojNObjects());
 		calcAndPaintTD(obj);
 	}
 	mean = ojGetStatistics("TD", "mean");
@@ -404,10 +462,11 @@ function calcAndPaintAllTDs(){
 	}
 }
 
-function calcAndPaintTD(obj){
-	extractPairs("AreaPairs", obj);
-	xx = xxg;
-	yy = yyg;
+//Calculates doubling time TD from manual or automatic time range, paint green slope
+function calcAndPaintTD(obj){	
+	xx = extractArray("AreaPairs", obj, 0);
+	yy = extractArray("AreaPairs", obj, 1);
+	
 	len = xx.length;
 	if(len <2)
 		return;
@@ -486,15 +545,13 @@ function calcAndPaintTD(obj){
 	}
 }
 
-
-//===Old===
-//Calculates TD from manual or automatic time window, paint slope in plot
+//Paints magenta dots for begin and end of germination
 function calcAndPaintGermination(){
 	for(obj = 1; obj <= ojNObjects(); obj++){
-		showProgress(obj/ojNObjects());
-		extractPairs("grayPairs", obj);
-		xx = xxg;
-		yy = yyg;
+		//showProgress(obj/ojNObjects());	
+		xx = extractArray("grayPairs", obj, 0);
+		yy = extractArray("grayPairs", obj, 1);
+
 		len = yy.length;
 		dropIndex1 = -1;
 		droppedTo = -1;
@@ -539,7 +596,6 @@ function calcAndPaintGermination(){
 				toUnscaled(germX2, germY2);		
 				makeOval(germX2 -5, germY2 - 5, 11, 11);
 				changeValues(white, white, 0xffaaff);
-				//run("Select None");	
 				msg = "Germ1 =" + d2s(xx[dropIndex1], 1) + " min";
 				
 				makeRectangle(0, getHeight - 24, 300, 24);
@@ -554,97 +610,20 @@ function calcAndPaintGermination(){
 	}
 }
 
-//===New===
-function calcAndPaintGerminationNew(){
-	for(obj = 1; obj <= ojNObjects(); obj++){
-		showProgress(obj/ojNObjects());
-		germY1 = -1;
-		if(ojColumnNumber("germPairs") > 0){
-			extractPairs("germPairs", obj);
-			if(xxg.length == 2){
-				germX1 = xxg[0];
-				germY1 = yyg[0];
-				germX2 = xxg[1];
-				germY2 = yyg[1];
-			}
-		}
-
-		if(germY1 == -1){//automatic
-			extractPairs("grayPairs", obj);
-			xx = Array.copy(xxg);
-			yy = Array.copy(yyg);
-			len = yy.length;
-
-			dropIndex1 = -1;
-			droppedTo = -1;
-			for(jj= 1; jj< len; jj++){
-				if(dropIndex1 >= 0 && yy[jj] > droppedTo){//Undo germination
-					dropIndex1 = -1;
-					droppedTo = -1;
-				}
-				if (yy[jj] /yy[jj - 1] < 0.9){
-					if(dropIndex1 == -1){
-						dropIndex1 = jj-1;
-						droppedTo = yy[jj];
-					}
-				}	
-			}
-			for (jj = dropIndex1; jj > 0; jj--){
-				if (yy[jj] /yy[jj - 1] < 0.97)
-					dropIndex1 = jj-1;
-				else break;
-			}
-			if(dropIndex1 >=0){
-				germX1 = xx[dropIndex1];
-				germY1 = yy[dropIndex1];
-				trimmedYY = Array.trim(yy, dropIndex1 + 20);//only 20 subsequent time points
-				Array.getStatistics(trimmedYY, min, max, mean, stdDev);
-				for(kk = 0; kk < yy.length; kk++){
-					if(trimmedYY[kk] <= min + (max - min) * 0.1){
-						dropIndex2 = kk;
-						break;
-					}
-				}
-				germX2 = xx[dropIndex2];
-				germY2 = yy[dropIndex2];
-			}
-		}
-		ojSetResult("Germ1", obj, germX1);
-		ojSetResult("Germ2", obj, germX2);
-		if(getTitle == "Plot_Germination"){
-			setSlice(obj);
-			toUnscaled(germX1, germY1);		
-			makeOval(germX1 -5, germY1 - 5, 11, 11);
-			changeValues(white, white, 0xffaaff);
-			toUnscaled(germX2, germY2);		
-			makeOval(germX2 -5, germY2 - 5, 11, 11);
-			changeValues(white, white, 0xffaaff);
-			//run("Select None");	
-			msg = "Germ1 =" + d2s(xx[dropIndex1], 1) + " min";
-			
-			makeRectangle(0, getHeight - 24, 300, 24);
-			changeValues(0, white, white);
-			setColor(0xaa0000);
-	
-
-			drawString(msg, 10, getHeight -4);
-			run("Select None");
-		}
-	}
-}
-
-//uses manual entries for "First Division" and paints them in plot
+//Uses manual entries for "First Division" and paints them in plot
 function paintAllFirstDivs(){
 	for(obj = 1; obj <= ojNObjects(); obj++){
 		firstDiv = ojResult("FirstDiv", obj);
 		
 		if(!isNaN(firstDiv)){
-			extractPairs("AreaPairs", obj);
-			len = xxg.length;
+			xx = extractArray("AreaPairs", obj, 0);
+			yy = extractArray("AreaPairs", obj, 1);
+
+			len = xx.length;
 			for(jj= 0; jj< len; jj++){
-				if(xxg[jj] == firstDiv){
+				if(xx[jj] == firstDiv){
 					x = firstDiv;
-					y = log(parseFloat(yyg[jj]))/log(2);
+					y = log(parseFloat(yy[jj]))/log(2);
 					setSlice(obj);
 					toUnscaled(x, y);
 					makeOval(x -4, y - 6, 8, 12);
@@ -652,26 +631,26 @@ function paintAllFirstDivs(){
 					break;
 				}
 			}
-
 		}
 	}
 	run("Select None");
 }
 
+//
 function calcAndPaintAllBursts(){
 	setColor(burstColor);
 	for(obj = 1; obj <= ojNObjects(); obj++){
-		showProgress(obj/ojNObjects());
+		//showProgress(obj/ojNObjects());
 		bIndex = -1;
 		burstM = ojResult("BurstM", obj);
-		extractPairs("AreaPairs", obj);
-		xx = Array.copy(xxg);
-		yy = Array.copy(yyg);
+		xx = extractArray("AreaPairs", obj, 0);
+		yy = extractArray("AreaPairs", obj, 1);
+
 		len = xx.length;
 		for(jj= 0; jj< len; jj++){
 			yy[jj] = log(parseFloat(yy[jj]))/log(2);
 		}
-		if(!isNaN(burstM)){
+		if(!isNaN(burstM)){//was marked manually
 			for(jj= 0; jj< len; jj++){
 				if(abs(xx[jj] - burstM) < 0.001){
 					bIndex = jj-1;
@@ -679,9 +658,9 @@ function calcAndPaintAllBursts(){
 				}
 			}
 		}
-		else{
-			for(jj= 8; jj< len; jj++){
-				if (yy[jj] - yy[jj - 3] > 0.15 && yy[jj] >1.0){//Burst Sensor
+		else if(autoBurst){//Automatic Burst Sensor
+			for(jj= 8; jj< len; jj++){//does area jump >15% within 3 frames?
+				if (yy[jj] - yy[jj - 3] > 0.15 && yy[jj] >1.0){//area > 2^1.0 sqUm?
 					bIndex = jj-1;
 					break;
 				}
@@ -710,8 +689,8 @@ function calcAndPaintAllBursts(){
 function onePlotToClip(plotX, plotY){
 		color = "blue";			
 		Plot.create("tmp-", "Time [min]", yLegend);
-		Plot.setFrameSize(550, 250);//12.06.12 21:47
- 		Plot.setLimits(0, 300, 0, yMax);
+		Plot.setFrameSize(550, 250);
+ 		Plot.setLimits(0, xLimit, 0, yMax);
 		Plot.setColor(color);
 		Plot.add("line", plotX, plotY);
 		Plot.show();
@@ -719,14 +698,14 @@ function onePlotToClip(plotX, plotY){
 		run("Copy");
 }
 
-//Extract original .nd2 file name and preparation time in seconds
+//If metadata contains .nd2 file name:
+//.nd2 file name and preparation time in seconds is extracted:
 //Label Example "t:1/271 - 20170430 168 tsb bl1 0.06xTNO4_p318.nd2 (series 1)"
 //                       A                               B    C   
 //fName = "20170430 168 tsb bl1 0.06xTNO4_p318.nd2"
 //seconds = 318
 function evalMetadata(img, names, prepTimes){
 	label = getMetadata("label");
-	//len = lengthOf(label);
 	posA = indexOf(label, "- ");
 	posB = lastIndexOf(label, "_p");
 	posC = lastIndexOf(label, ".nd2");
@@ -767,19 +746,6 @@ function removeNeighbors(){
 }
 
 
-
-// macro "SetThresholds manually"{
-// 	setAutoThreshold("Default");
-// 	waitForUser("Adjust threshold to select bright spores, then click 'OK'");
-// 	getThreshold(brightThr1, upper);
-// 	waitForUser("Adjust threshold 'end of bright phase', then click 'OK'");
-// 	getThreshold(brightThr2, upper);
-// 	setAutoThreshold("Default dark");
-// 	waitForUser("Adjust threshold to select dark spores, then click 'OK'");
-// 	getThreshold(lower, darkThr);
-// }
-
-
 // ObjectJ Tools: use tool with logo "N":
 //dragging the cursor across the plot plays the movie synchronously 
 macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
@@ -792,14 +758,10 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	}
 
 	getCursorLoc(x, y, z, flags);
-	
-	
 	if (getSliceNumber == nSlices){
 		selectSinglePlot(x, y);	
 		exit;
 	}
-
-	//debug;
 	obj = z+1;
 	if (obj > ojNObjects()) return;
 	ojSelectObject(obj);
@@ -832,7 +794,9 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	obj = getSliceNumber;
 	if (obj > ojNObjects()) 
 		return;
-	openVirtually(img);
+	//openVirtually(img);
+	ojShowImage(img);
+	
 	frameInterval = Stack.getFrameInterval();
 	stackID = getImageID;
  	Stack.getDimensions(dummy, dummy, nChannels, numSlices, nFrames);
@@ -854,13 +818,10 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 			if (frm < 1) frm = 1;
 			if (frm > nFrames) frm = nFrames;
 			
-			
 			selectImage(stackID);
-			//run("Select None");
 			FR=(minOf(frm, nFrames));
 			Stack.setFrame(FR);
 			
-//31. May 2017 17:46		
 			run("Select None");	
 			for(itm = 1; itm <= ojNItems("*"); itm++){
 				ojSelectItem("*", itm);
@@ -888,10 +849,9 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 		setBatchMode(false);
 	selectImage(stackID);
 	run("Select None");
-	selectImage(clickedID);//return to original window
-
-	
-	//stelle Dich schlafend
+	//selectWindow("ImageJ");//work-around
+	selectImage(clickedID);//return to original window ####
+	showStatus("clickedID=" + clickedID);
 }
 
 //Q flag = 1 :qualified = yes
@@ -991,10 +951,6 @@ macro "Set Sign T1 [1]"{
 macro "Set Sign T2 [2]"{
 	setSign(3);
 }
-// 
-// macro "Set Sign G [G]"{
-// 	setSign(4);
-// }
 
 //set coloured sign into growth Plot
 function setSign(signIndex){
@@ -1014,9 +970,8 @@ function setSign(signIndex){
 	
 	
 	if(signIndex != 4){
-		extractPairs("AreaPairs", obj);
-		xx = Array.copy(xxg);
-		yy = Array.copy(yyg);
+		xx = extractArray("AreaPairs", obj, 0);
+		yy = extractArray("AreaPairs", obj, 1);
 		dMin = 1e6;  
 		foundLocX = 1e6;              
 		for(jj = 0; jj < xx.length; jj++){
@@ -1060,9 +1015,10 @@ function setSign(signIndex){
 	}	
 	
 	if(signIndex == 4){//
-		extractPairs("GrayPairs", obj);
-		xx = Array.copy(xxg);
-		yy = Array.copy(yyg);
+		xx = extractArray("GrayPairs", obj, 0);
+		yy = extractArray("GrayPairs", obj, 1);
+		//xx = Array.copy(xxg);
+		//yy = Array.copy(yyg);
 		Array.getStatistics(yy, min, max, mean, stdDev);
 		mid = (min + max)/2;
 		hitIndex = 0;
@@ -1118,13 +1074,9 @@ function setSign(signIndex){
 				makeRectangle(0, getHeight - 24, 300, 24);
 				changeValues(0, white, white);
 				setColor(0xaa0000);
-		
-
 				drawString(msg, 10, getHeight -4);
 				run("Select None");
 			}
-
-
 	}	
 }
 
@@ -1148,41 +1100,40 @@ function objFromMetadata(){
 	return obj;
 }
 
-//extract values from strings into global arrays xxg and yyg
-function extractPairs(colTitle, obj){
+
+//Extract numerical array from string. If string == "3 4; 2 8", then: 
+// index = 0: returns newArray(3, 2);
+// index = 1: returns newArray(4, 8);
+
+function extractArray(colTitle, obj, index){
 	pairs = split(ojResultString(colTitle, obj), ";;");//dual-semicolon: avoid empty strings
 	len = pairs.length;
-	xxg = newArray(len);
-	yyg = newArray(len);
+	arr = newArray(len);
 	for(jj= 0; jj< len; jj++){
 		pair = split(pairs[jj]);
-		if(pair.length < 2){
-			xxg = newArray(0);
-			yyg = newArray(0);
-			return;//ignore the single zero
-		}	
-		xxg[jj] = parseFloat(pair[0]);
-		yyg[jj] = parseFloat(pair[1]);
+		if(pair.length < 2)
+			return newArray(0);	
+		arr[jj] = parseFloat(pair[index]);
 	}
+	return arr;
 }
 
+//ObjectJ result columns are created from scratch
 function initColumns(){
 	ojDeleteColumn("*");
  	ojInitTextColumn("nd2Name File AreaPairs GrayPairs");
- 	ojInitColumn("Batch PrepTime T1 T2 TD Germ1 Germ2 Burst BurstM FirstDiv Q");
+ 	ojInitColumn("Batch PrepTime T1 T2 TD Germ1 Germ2 Burst BurstM FirstDiv Q x y");
  	ojSetColumnProperty("T1 T2 TD Germ1 Germ2 Burst  BurstM ", "digits", 1);
-	ojSetColumnProperty("Batch PrepTime Q", "digits", 0);
-	ojSetColumnProperty("nd2Name File Batch T1 T2 PrepTime Germ2 BurstM *Pairs", "visible", 0);
+	ojSetColumnProperty("Batch PrepTime Q x y", "digits", 0);
+	ojSetColumnProperty("nd2Name File Batch T1 T2 PrepTime Germ2 BurstM *Pairs x y", "visible", 0);
 	ojSetColumnProperty("Germ1", "color", 0xff00ff);
 	ojSetColumnProperty("Burst", "color", burstColor);
 	ojSetColumnProperty("TD", "color", 0x0000aa);	
-	//return 0;
 }
 
 
 //when clicking with N-tool on collective plot, it jumps to that single plot
 function selectSinglePlot(x, y){
-	//getCursorLoc(x, y, z, flags);
 	xhit = 0;
 	yhit = 0;
 	minRad = 1e9;
@@ -1248,12 +1199,3 @@ macro "Activate Navigation [N]"{
 	}
 	ojSetTool(-101);//N-tool
 }
-
-
-// 
-// macro "Manual Germination Test [0]"{
-// 	ojInitTextColumn("GermPairs");
-// 	ojSetResult("GermPairs", 4, "2 3;4 5;");
-// 
-// }
-
