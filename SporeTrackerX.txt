@@ -1,5 +1,5 @@
 //SporeTrackerX
-//18.03.18 10:06
+//20.03.18 2:08 version 1.1c
 var //====== user-defined variables
 	brightFactor = 0.4,//threshold in slice=1 :  default = 0.4 *upperRange;
 	stillBrightFactor = 0.2,//threshold in slice>1:  default = 0.2 *upperRange;
@@ -12,7 +12,9 @@ var //====== user-defined variables
 	minStopArea = 3, //log(2) area for measuring TD, default = 3 (2^3 = 8 um^2)
 	minParticleB = 60, //smaller bright particles are ignored, default = 60 pixel
 	minParticleD = 120, //smaller dark particles are ignored, default = 120 pixel
-	peakRad = 4, //radius to average a peak's top intensity, default = 4 pixel
+	peakRad = 6, //radius to average a peak's top intensity, default = 4 pixel
+	germHigh = 0.9, //germination start defined as fraction of droprange, default = 0.9
+	germLow = 0.1, //germination end defined as fraction of droprange, default = 0.1
 	plotTitles=split("Growth Germination"),
 	signNames = split("Burst    FirstDiv  T1     T2 Germ"),
 	lGray = 0xdddddd, white = 0xffffff, slopeColor = 0xccffcc,
@@ -26,7 +28,8 @@ var //====== user-defined variables
 	yLimitGray = 65000, // plot range intensity,
 
 	n_debug = false,
-	
+
+
 macro "Analyze Spores [F1]"{
 	requires("1.51v");
 	ojRequires("1.04f");
@@ -380,14 +383,12 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 		if(isNaN(q) || q !=0)
 			ojSetResult("Q", obj, 1);
 		if(plot == 0){//"Growth"
-		//if(plotTitles[plot] == "Growth"){						
 			xx = extractArray("AreaPairs", obj, 0);
 			yy = extractArray("AreaPairs", obj, 1);
 
 			for(jj= 0; jj< yy.length; jj++)
 				yy[jj] = log(yy[jj])/log(2);
 		}
-		//if(plotTitles[plot] == "Germination"){
 		if(plot == 1){ // "Germination"
 			xx = extractArray("GrayPairs", obj, 0);
 			yy = extractArray("GrayPairs", obj, 1);
@@ -395,6 +396,7 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 		}
 		len = xx.length;
 		yMax= yMaxLimits[plot];
+		
 		onePlotToClip(xx, yy);//puts plot to clipboard
 		if(obj == 1){
 			run("Add Slice");
@@ -402,6 +404,8 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 			rename("Plot_" + title);
 		}
 		else{
+			if(!isOpen("Plot_" + title))
+				return;//19.03.18 23:29
 			close;
 			selectImage("Plot_" + title);
 			run("Add Slice");
@@ -548,64 +552,56 @@ function calcAndPaintTD(obj){
 //Paints magenta dots for begin and end of germination
 function calcAndPaintGermination(){
 	for(obj = 1; obj <= ojNObjects(); obj++){
-		//showProgress(obj/ojNObjects());	
+		ojSelectObject(obj);
+		if(ojNItems("Contour") == 0){
+			ojSetResult("Germ1", obj, NaN);
+			ojSetResult("Germ2", obj, NaN);
+			continue;	
+		}
 		xx = extractArray("grayPairs", obj, 0);
 		yy = extractArray("grayPairs", obj, 1);
+		Array.getStatistics(yy, min, max, mean, stdDev);
+		len = yy.length * 10;//refine
+		xx = Array.resample(xx, len);
+		yy = Array.resample(yy, len);
+		highLevel = germHigh * (max - min) + min;
+		lowLevel = germLow * (max - min) + min;
+		lowIndex = 0;
+		highIndex = 0;
+		for(jj = 0; jj < len; jj++){
+			y = yy[jj];
+			if(y > highLevel)
+				highIndex = jj;
+			if(y < lowLevel){
+				lowIndex = jj;
+				break;
+			}
+		}
 
-		len = yy.length;
-		dropIndex1 = -1;
-		droppedTo = -1;
-		for(jj= 1; jj< len; jj++){
-			if(dropIndex1 >= 0 && yy[jj] > droppedTo){//Undo germination
-				dropIndex1 = -1;
-				droppedTo = -1;
-			}
-			if (yy[jj] /yy[jj - 1] < 0.9){
-				if(dropIndex1 == -1){
-					dropIndex1 = jj-1;
-					droppedTo = yy[jj];
-				}
-			}	
-		}
-		for (jj = dropIndex1; jj > 0; jj--){
-			if (yy[jj] /yy[jj - 1] < 0.97)
-				dropIndex1 = jj-1;
-			else break;
-		}
-		if(dropIndex1 >=0){
-			germX1 = xx[dropIndex1];
-			germY1 = yy[dropIndex1];
-			trimmedYY = Array.trim(yy, dropIndex1 + 20);//only 20 subsequent time points
-			Array.getStatistics(trimmedYY, min, max, mean, stdDev);
-			for(kk = 0; kk < yy.length; kk++){
-				if(trimmedYY[kk] <= min + (max - min) * 0.1){
-					dropIndex2 = kk;
-					break;
-				}
-			}
-			germX2 = xx[dropIndex2];
-			germY2 = yy[dropIndex2];
-			
-			ojSetResult("Germ1", obj, germX1);
-			ojSetResult("Germ2", obj, germX2);
-			if(getTitle == "Plot_Germination"){
-				setSlice(obj);
-				toUnscaled(germX1, germY1);		
-				makeOval(germX1 -5, germY1 - 5, 11, 11);
-				changeValues(white, white, 0xffaaff);
-				toUnscaled(germX2, germY2);		
-				makeOval(germX2 -5, germY2 - 5, 11, 11);
-				changeValues(white, white, 0xffaaff);
-				msg = "Germ1 =" + d2s(xx[dropIndex1], 1) + " min";
-				
-				makeRectangle(0, getHeight - 24, 300, 24);
-				changeValues(0, white, white);
-				setColor(0xaa0000);
+		germX1 = xx[highIndex];
+		germY1 = yy[highIndex];
+
+		germX2 = xx[lowIndex];
+		germY2 = yy[lowIndex];
 		
+		ojSetResult("Germ1", obj, germX1);
+		ojSetResult("Germ2", obj, germX2);
+		if(getTitle == "Plot_Germination"){
+			msg = "Germ1 =" + d2s(germX1, 1) + " min";
+			setSlice(obj);
+			toUnscaled(germX1, germY1);		
+			makeOval(germX1 -5, germY1 - 5, 11, 11);
+			changeValues(white, white, 0xffaaff);
+			toUnscaled(germX2, germY2);		
+			makeOval(germX2 -5, germY2 - 5, 11, 11);
+			changeValues(white, white, 0xffaaff);
+			
+			makeRectangle(0, getHeight - 24, 300, 24);
+			changeValues(0, white, white);
+			setColor(0xaa0000);
 
-				drawString(msg, 10, getHeight -4);
-				run("Select None");
-			}
+			drawString(msg, 10, getHeight -4);
+			run("Select None");
 		}
 	}
 }
