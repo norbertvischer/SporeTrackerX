@@ -1,5 +1,5 @@
 //SporeTrackerX
-//20.03.18 2:08 version 1.1c
+//22.03.18 1:11    version 1.1d
 var //====== user-defined variables
 	brightFactor = 0.4,//threshold in slice=1 :  default = 0.4 *upperRange;
 	stillBrightFactor = 0.2,//threshold in slice>1:  default = 0.2 *upperRange;
@@ -15,6 +15,7 @@ var //====== user-defined variables
 	peakRad = 6, //radius to average a peak's top intensity, default = 4 pixel
 	germHigh = 0.9, //germination start defined as fraction of droprange, default = 0.9
 	germLow = 0.1, //germination end defined as fraction of droprange, default = 0.1
+	includeHoles = true, //when true (=default), sudden inclosures of re-bending filaments will stop history 
 	plotTitles=split("Growth Germination"),
 	signNames = split("Burst    FirstDiv  T1     T2 Germ"),
 	lGray = 0xdddddd, white = 0xffffff, slopeColor = 0xccffcc,
@@ -40,6 +41,7 @@ macro "Analyze Spores [F1]"{
 		deleteAll = getBoolean("Delete all " + ojNObjects() + " Objects?", "Delete All", "Process unmarked images");
 	if(deleteAll)
 		ojDeleteAllObjects();
+	close("Plot_*");
 	startObjects = ojNObjects();
 	targetFlag = true;//a kind of batchMode for objects
 	if(ojNObjects() == 0)
@@ -95,7 +97,7 @@ macro "Analyze Spores [F1]"{
 			objIndexes = "";//growing string
 			setThreshold(isBright, 1e6);
 
-			run("Analyze Particles...", "size=&minParticleB-Infinity pixel display exclude clear include add slice");
+			run("Analyze Particles...", "size=&minParticleB-Infinity pixel display exclude clear add slice");
 			print(getTitle);
 			removeNeighbors();
 			nSpores = nResults;//spores in first slice
@@ -137,7 +139,7 @@ macro "Analyze Spores [F1]"{
 //====== Frame >= 2  
 //- analyze  bright  particles, 
 //- analyze dark particles, 
-// -re-identify per frame.
+//- re-identify per frame.
 //- update 'lifeStage' status per spore BRIGHT, DARK or LOST
 			prevArea = newArray(ojNObjects());//detect abrupt growth or shrink
 			for(frame = 2; frame <= nFrames; frame++){//value pairs per spore
@@ -221,8 +223,10 @@ macro "Analyze Spores [F1]"{
 					
 				roiManager("reset");
 				run("Select None");
-
-				run("Analyze Particles...", "size=&minParticleD-Infinity pixel display exclude clear include add slice");
+				if (includeHoles)
+					run("Analyze Particles...", "size=&minParticleD-Infinity pixel display exclude clear add slice include");
+				else
+					run("Analyze Particles...", "size=&minParticleD-Infinity pixel display exclude clear add slice");
 				resetThreshold;
 				nRois = nResults;
 				maxRois = maxOf(maxRois, nRois);
@@ -313,11 +317,14 @@ macro "Analyze Spores [F1]"{
 		print("maxRois = ", maxRois);//indicate excessive noise particles
 	}// for (img=1
 	setBatchNumbers();
+	close("Results");
 	beep;
-	showMessage(" " + (ojNObjects() - startObjects) + " spores analyzed in " + d2s((getTime - startTime)/60e3, 1) + " min");
+	msg = " " + (ojNObjects() - startObjects) + " spores analyzed in " + d2s((getTime - startTime)/60e3, 1) + " min";
+	msg += "\n \nShow Plots in Navigation Mode?";
 	makeCollectivePlot(1, -1);
 	makeCollectivePlot(0, -1);	
-	close("Results");
+	if(getBoolean(msg))
+		activateNavigation();
 }//===== End Analyze Spores
 
 //Re-builds two collective plots using 'pairs' with manual entries in ObjectJ Results
@@ -340,22 +347,7 @@ function openAllVirtually(){
 function openVirtually(img){
 	ojSetVirtualFlag(true);
 	ojShowImage(img);
-	return;///////17.03.18 16:12
-// 	
-// 	prPath = ojGetProjectPath();
-// 	title = ojGetImageName(img);
-// 	if (isOpen(title)){
-// 		selectImage(title);
-// 		if(is("Virtual Stack") || nSlices==1)
-// 			return;
-// 		else
-// 			close;
-// 	}	
-// 	arg = "open=[" + prPath + title + "]";
-// 	run("TIFF Virtual Stack...", arg);
-// 	run("Select None");
-// 	if(bitDepth == 16)
-// 		setMinAndMax(0, 30000);
+	return;
 }
 
 //Create new Plot-Stack if img==1, otherwise append plots to existing stack.
@@ -385,14 +377,12 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 		if(plot == 0){//"Growth"
 			xx = extractArray("AreaPairs", obj, 0);
 			yy = extractArray("AreaPairs", obj, 1);
-
 			for(jj= 0; jj< yy.length; jj++)
 				yy[jj] = log(yy[jj])/log(2);
 		}
 		if(plot == 1){ // "Germination"
 			xx = extractArray("GrayPairs", obj, 0);
 			yy = extractArray("GrayPairs", obj, 1);
-
 		}
 		len = xx.length;
 		yMax= yMaxLimits[plot];
@@ -452,7 +442,6 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 //Calculates doubling times TD of all objects
 function calcAndPaintAllTDs(){
 	for(obj = 1; obj <= ojNObjects(); obj++){
-		//showProgress(obj/ojNObjects());
 		calcAndPaintTD(obj);
 	}
 	mean = ojGetStatistics("TD", "mean");
@@ -775,8 +764,7 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	}
 	if(!n_debug)
 		setBatchMode(false);
-	selectImage(plotTitle);//synchronize both begin
-
+	selectImage(plotTitle);//synchronize both end
 
 	leftButton=16;
 	rightButton=4;
@@ -786,13 +774,10 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	getCursorLoc(x, y, z, flags);
 	if (ojNObjects() != nSlices-1)
 		exit("nObjects != nSlices-1: You should rebuild the plot");
-	
 	obj = getSliceNumber;
 	if (obj > ojNObjects()) 
 		return;
-	//openVirtually(img);
 	ojShowImage(img);
-	
 	frameInterval = Stack.getFrameInterval();
 	stackID = getImageID;
  	Stack.getDimensions(dummy, dummy, nChannels, numSlices, nFrames);
@@ -845,7 +830,6 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 		setBatchMode(false);
 	selectImage(stackID);
 	run("Select None");
-	//selectWindow("ImageJ");//work-around
 	selectImage(clickedID);//return to original window ####
 	showStatus("clickedID=" + clickedID);
 }
@@ -956,10 +940,16 @@ function setSign(signIndex){
 
 	sign = signNames[signIndex];
 
-	if(signIndex != 4 && getTitle != "Plot_Growth")
-			exit("'Plot_Growth' window must be in front");	
-	if(signIndex == 4 && getTitle != "Plot_Germination")
-			exit("'Plot_Germination' window must be in front");	
+	if(signIndex < 4 && getTitle != "Plot_Growth"){
+			if(getBoolean("First bring 'Plot_Growth' window to front?"))
+				selectImage("Plot_Growth");	
+			return;
+	}
+	if(signIndex == 4 && getTitle != "Plot_Germination"){//not implemented yet
+			if(getBoolean("First bring 'Plot_Germination' window to front?"))
+				selectImage("Plot_Germination");	
+			return;
+	}
 	getCursorLoc(x, y, z, flags);
 	toScaled(x, y);
 	obj = objFromMetadata();
@@ -1013,8 +1003,6 @@ function setSign(signIndex){
 	if(signIndex == 4){//
 		xx = extractArray("GrayPairs", obj, 0);
 		yy = extractArray("GrayPairs", obj, 1);
-		//xx = Array.copy(xxg);
-		//yy = Array.copy(yyg);
 		Array.getStatistics(yy, min, max, mean, stdDev);
 		mid = (min + max)/2;
 		hitIndex = 0;
@@ -1179,6 +1167,12 @@ macro "Activate Navigation [N]"{
 	}
 	obj = ojSelectedObject();
 	zoomTo(obj);
+	activateNavigation();
+}
+
+function activateNavigation(){
+	setBatchMode("exit and display");
+	obj = ojSelectedObject();
 	if(isOpen("Plot_Germination")){
 		selectWindow("Plot_Germination");
 		setLocation(screenWidth-720, 22);
