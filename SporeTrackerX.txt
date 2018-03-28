@@ -1,5 +1,5 @@
 //SporeTrackerX
-//22.03.18 1:11    version 1.1d
+//28.03.18 18:21    version 1.1e
 var //====== user-defined variables
 	brightFactor = 0.4,//threshold in slice=1 :  default = 0.4 *upperRange;
 	stillBrightFactor = 0.2,//threshold in slice>1:  default = 0.2 *upperRange;
@@ -10,8 +10,8 @@ var //====== user-defined variables
 	jumpTolerance = 20, // acceptance frame-to-frame movement, default = 20 pixels
 	startArea = 2.5, //log(2) area for measuring TD, default = 2.5  (2^2.5 = 5.6 um^2)
 	minStopArea = 3, //log(2) area for measuring TD, default = 3 (2^3 = 8 um^2)
-	minParticleB = 60, //smaller bright particles are ignored, default = 60 pixel
-	minParticleD = 120, //smaller dark particles are ignored, default = 120 pixel
+	minParticleB = 30, //smaller bright particles are ignored, default = 30 pixel
+	minParticleD = 60, //smaller dark particles are ignored, default = 60 pixel
 	peakRad = 6, //radius to average a peak's top intensity, default = 4 pixel
 	germHigh = 0.9, //germination start defined as fraction of droprange, default = 0.9
 	germLow = 0.1, //germination end defined as fraction of droprange, default = 0.1
