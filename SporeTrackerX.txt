@@ -1,5 +1,6 @@
 //SporeTrackerX
-//29.03.18 1:46  version 1.1f
+//16.04.18 23:44
+//version 1.1h
 var //====== user-defined variables
 	brightFactor = 0.4,//threshold in slice=1 :  default = 0.4 *upperRange;
 	stillBrightFactor = 0.2,//threshold in slice>1:  default = 0.2 *upperRange;
@@ -12,12 +13,12 @@ var //====== user-defined variables
 	minStopArea = 3, //log(2) area for measuring TD, default = 3 (2^3 = 8 um^2)
 	minParticleB = 30, //smaller bright particles are ignored, default = 30 pixel
 	minParticleD = 60, //smaller dark particles are ignored, default = 60 pixel
-	peakRad = 6, //radius to average a peak's top intensity, default = 4 pixel
+	peakRad = 4, //radius to average a peak's top intensity, default = 4 pixel
 	germHigh = 0.9, //germination start defined as fraction of droprange, default = 0.9
 	germLow = 0.1, //germination end defined as fraction of droprange, default = 0.1
 	includeHoles = true, //when true (=default), sudden inclosures of re-bending filaments will stop history 
 	plotTitles=split("Growth Germination"),
-	signNames = split("Burst    FirstDiv  T1     T2 Germ"),
+	signNames = split("Burst FirstDiv T1 T2 Germ"),
 	lGray = 0xdddddd, white = 0xffffff, slopeColor = 0xccffcc,
 	burstColor = 0xee9900, firstDivColor = 0x889900, t1Color= 0x00aa00, t2Color = 0x00aa00,
 	signColors = newArray(burstColor, firstDivColor, t1Color, t2Color),
@@ -25,8 +26,9 @@ var //====== user-defined variables
 	afterBrightCircles = 15,//use circular roi n frames after transition, default=15  
 	afterBrightGrays = 50,//record intensity  n frames after transition, default=50
 	xLimit = 300, //minutes plot range
-	yLimitArea = 6, // plot range for growth,  default = 6  (2^6 = 64 um^2)
-	yLimitGray = 65000, // plot range intensity,
+	plotAreaMin = -0.5, //plot range for growth,  default = -0.5  (2^-0.5 = 0.5um^2)
+	plotAreaMax = 6, // plot range for growth,  default = 6  (2^6 = 64 um^2)
+	plotGrayMax = 65000, // plot range intensity,
 
 	n_debug = false,
 
@@ -36,6 +38,7 @@ macro "Analyze Spores [F1]"{
 	ojRequires("1.04f");
 	if(n_debug) debug;
 	deleteAll = false;
+	ojHideResults();
 	ojSetVirtualFlag(true);
 	if(ojNObjects() > 0)
 		deleteAll = getBoolean("Delete all " + ojNObjects() + " Objects?", "Delete All", "Process unmarked images");
@@ -53,11 +56,12 @@ macro "Analyze Spores [F1]"{
 	print("\\Clear");
 	startTime = getTime;
 	run("Set Measurements...", "area mean centroid");
-	openAllVirtually();//17.03.18 0:10
+	openAllVirtually();
 	nLinkedImgs = ojNImages();
 	nd2Names = newArray(nLinkedImgs);
 	prepTimes = newArray(nLinkedImgs);
 	for(img = 1; img <= ojNImages(); img++){
+		ojHideResults();
 		frameInterval = ojGetImageValue(1, "frameinterval");
 		frames = ojGetImageValue(1, "frames");
 		if(frames == 1) 
@@ -98,7 +102,8 @@ macro "Analyze Spores [F1]"{
 			setThreshold(isBright, 1e6);
 
 			run("Analyze Particles...", "size=&minParticleB-Infinity pixel display exclude clear add slice");
-			print(getTitle);
+			checkCapsLock();
+ 			print(getTitle);
 			removeNeighbors();
 			nSpores = nResults;//spores in first slice
 			if(nSpores == 0)
@@ -145,31 +150,13 @@ macro "Analyze Spores [F1]"{
 			for(frame = 2; frame <= nFrames; frame++){//value pairs per spore
 				slc = (frame - 1) * nChannels + chn;
 				frameTime = (frame -1) * frameInterval;//start with time=0
-
-				if(is("Caps Lock Set")){ //handle controlled interrupt
-					stopTime = getTime;
-					ojSetTool(0);
-					run("View 100%");				
-					id = getImageID;
-					selectImage(id);
-					if(!n_debug)
-						setBatchMode("show");
-					if(targetFlag) 
-						ojSetTarget("exit");
-					waitForUser("Caps Lock is down for inspection.\n \nPress 'Esc' to abort.\nClick 'OK' to continue.");
-					startTime += getTime - stopTime;
-					ojShowImage(img);
-					selectImage(id);
-					if(!n_debug)
-						setBatchMode("hide");
-				}
-				
+				checkCapsLock();			
 				showProgress(-frame/nFrames);
 				setSlice(slc);
 				if(targetFlag) ojSetTarget("image=" + img);
 				if(targetFlag) ojSetTarget("slice=" + slc);
 				
-				//======  Bright Particles in Frame >= 2
+//======  Bright Particles in Frame >= 2
 				setThreshold(stillBright, 1e6);
 				roiManager("reset");
 				run("Select None");
@@ -215,7 +202,7 @@ macro "Analyze Spores [F1]"{
 					}
 				}
 
-				//======  Dark Particles in Frame >= 2
+//======  Dark Particles in Frame >= 2
 				if(isNaN(parseInt(darkThr)))
 					setAutoThreshold(darkThr);//string for auto-threshold, e.eg. "Default"
 				else
@@ -324,6 +311,7 @@ macro "Analyze Spores [F1]"{
 	makeCollectivePlot(1, -1);
 	makeCollectivePlot(0, -1);
 	setBatchMode("exit and display");//28.03.18 23:50	
+	ojSelectObject(0);
 	if(getBoolean(msg))
 		activateNavigation();
 }//===== End Analyze Spores
@@ -332,6 +320,9 @@ macro "Analyze Spores [F1]"{
 macro "Plot Growth and Germination [F2]"{
 	makeCollectivePlot(1, -1);//-1 = include all images
 	makeCollectivePlot(0, -1);
+	showMessageWithCancel("Show Plots in Navigation Mode?");
+	ojSelectObject(0);
+	activateNavigation();
 }
 
 
@@ -351,10 +342,33 @@ function openVirtually(img){
 	return;
 }
 
+
+function checkCapsLock(){
+	if(is("Caps Lock Set")){ //handle controlled interrupt
+		stopTime = getTime;
+		ojSetTool(0);
+		run("View 100%");				
+		id = getImageID;
+		selectImage(id);
+		if(!n_debug)
+			setBatchMode("show");
+		if(targetFlag) 
+			ojSetTarget("exit");
+		waitForUser("Caps Lock is down for inspection.\n \nPress 'Esc' to abort.\nClick 'OK' to continue.");
+		startTime += getTime - stopTime;
+		ojHideResults();
+		ojShowImage(img);
+		selectImage(id);
+		if(!n_debug)
+			setBatchMode("hide");
+	}
+}
+
 //Create new Plot-Stack if img==1, otherwise append plots to existing stack.
 function makeCollectivePlot(plot, img){//all images if img=-1
 	setFont("SansSerif", 12, "antiliased bold");
-	yMaxLimits = newArray(yLimitArea, yLimitGray);
+	yMinLimits = newArray(plotAreaMin, 0);
+	yMaxLimits = newArray(plotAreaMax, plotGrayMax);
 	legends = split("log(2, Area [um]);Brightness", ";");
 	if(!n_debug)
 		setBatchMode(true);
@@ -386,9 +400,10 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 			yy = extractArray("GrayPairs", obj, 1);
 		}
 		len = xx.length;
+		yMin= yMinLimits[plot];
 		yMax= yMaxLimits[plot];
 		
-		onePlotToClip(xx, yy);//puts plot to clipboard
+		onePlotToClip(xx, yy, yMin, yMax);//puts plot to clipboard
 		if(obj == 1){
 			run("Add Slice");
 			run("Delete Slice");
@@ -410,6 +425,11 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 		}
 	}
 	close("Projection_" + title);
+	if(nSlices == 1){
+		exit("No z projection is possible");
+		setBatchMode("exit and display");
+	}
+		
 	run("Z Project...", "projection=[Min Intensity]");
 	rename("Projection_" + title);
 	changeValues(lGray, lGray, white);
@@ -550,6 +570,8 @@ function calcAndPaintGermination(){
 		}
 		xx = extractArray("grayPairs", obj, 0);
 		yy = extractArray("grayPairs", obj, 1);
+		if(xx.length<2 || yy.length<2)
+			continue;//16.04.18 19:44
 		Array.getStatistics(yy, min, max, mean, stdDev);
 		len = yy.length * 10;//refine
 		xx = Array.resample(xx, len);
@@ -672,11 +694,11 @@ function calcAndPaintAllBursts(){
 }
 
 //Creates a plot for one object and one type (name starts with "tmp-").
-function onePlotToClip(plotX, plotY){
+function onePlotToClip(plotX, plotY, yMin, yMax){
 		color = "blue";			
 		Plot.create("tmp-", "Time [min]", yLegend);
 		Plot.setFrameSize(550, 250);
- 		Plot.setLimits(0, xLimit, 0, yMax);
+ 		Plot.setLimits(0, xLimit, yMin, yMax);
 		Plot.setColor(color);
 		Plot.add("line", plotX, plotY);
 		Plot.show();
@@ -752,7 +774,7 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	if (obj > ojNObjects()) return;
 	ojSelectObject(obj);
 	img = ojOwnerIndex(obj);
-
+	ojShowImage(img);///////////////////
 	if(!n_debug)
 		setBatchMode(true);//synchronize both begin
 	navTitles = split("Plot_Germination Plot_Growth");
@@ -779,7 +801,8 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	if (obj > ojNObjects()) 
 		return;
 	ojShowImage(img);
-	frameInterval = Stack.getFrameInterval();
+	frameInterval = ojGetImageValue(img, "frameinterval");
+	//frameInterval = Stack.getFrameInterval();
 	stackID = getImageID;
  	Stack.getDimensions(dummy, dummy, nChannels, numSlices, nFrames);
 	xc = ojXPos(1);
