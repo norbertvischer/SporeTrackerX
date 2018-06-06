@@ -1,6 +1,6 @@
 //SporeTrackerX
-//16.04.18 23:44
-//version 1.1h
+//06.06.18 23:36
+//version 1.1k
 var //====== user-defined variables
 	brightFactor = 0.4,//threshold in slice=1 :  default = 0.4 *upperRange;
 	stillBrightFactor = 0.2,//threshold in slice>1:  default = 0.2 *upperRange;
@@ -8,16 +8,16 @@ var //====== user-defined variables
 	stillBrightThr=0, //use value>0 to set fixed threshold and ignore stillBrightFactor
 	darkThr="Default", //thresholding dark particles, auto (e.g. "Default") or fixed  number
 	neighborDist = 4, // neighbors ignored if closer than: default = 4 um
-	jumpTolerance = 20, // acceptance frame-to-frame movement, default = 20 pixels
+	jumpTolerance = 70, // acceptance frame-to-frame movement, default = 20 pixels
 	startArea = 2.5, //log(2) area for measuring TD, default = 2.5  (2^2.5 = 5.6 um^2)
 	minStopArea = 3, //log(2) area for measuring TD, default = 3 (2^3 = 8 um^2)
-	minParticleB = 30, //smaller bright particles are ignored, default = 30 pixel
-	minParticleD = 60, //smaller dark particles are ignored, default = 60 pixel
+	minParticleB = 30, //smaller Bright particles are ignored, default = 30 pixel
+	minParticleD = 60, //smaller Dark particles are ignored, default = 60 pixel
 	peakRad = 4, //radius to average a peak's top intensity, default = 4 pixel
 	germHigh = 0.9, //germination start defined as fraction of droprange, default = 0.9
 	germLow = 0.1, //germination end defined as fraction of droprange, default = 0.1
 	includeHoles = true, //when true (=default), sudden inclosures of re-bending filaments will stop history 
-	plotTitles=split("Growth Germination"),
+	plotTitles=split("Growth Germination Fluor"),
 	signNames = split("Burst FirstDiv T1 T2 Germ"),
 	lGray = 0xdddddd, white = 0xffffff, slopeColor = 0xccffcc,
 	burstColor = 0xee9900, firstDivColor = 0x889900, t1Color= 0x00aa00, t2Color = 0x00aa00,
@@ -25,12 +25,20 @@ var //====== user-defined variables
 	autoBurst = true,//auto-detect burst
 	afterBrightCircles = 15,//use circular roi n frames after transition, default=15  
 	afterBrightGrays = 50,//record intensity  n frames after transition, default=50
-	xLimit = 300, //minutes plot range
-	plotAreaMin = -0.5, //plot range for growth,  default = -0.5  (2^-0.5 = 0.5um^2)
-	plotAreaMax = 6, // plot range for growth,  default = 6  (2^6 = 64 um^2)
-	plotGrayMax = 65000, // plot range intensity,
-
+	//Plot ranges:
+	plotAreaMin = -0.2,
+	plotAreaMax = 6,
+	plotGrayMax =66000,
+	plotFlMax = 2000,
+	fluorRad = 30, //radius to measure integr. fluorescence in chan 2
+	navZoom = 1, //zoom factor while navigating, default = 2
 	n_debug = false,
+
+//automatic:
+	maxFrames,
+	n_channels,
+	xLimit, //plot range [minutes] 
+	frame_Interval,
 
 
 macro "Analyze Spores [F1]"{
@@ -38,36 +46,34 @@ macro "Analyze Spores [F1]"{
 	ojRequires("1.04f");
 	if(n_debug) debug;
 	deleteAll = false;
-	ojHideResults();
+	ojHideResults();//05.04.18 14:30
 	ojSetVirtualFlag(true);
 	if(ojNObjects() > 0)
 		deleteAll = getBoolean("Delete all " + ojNObjects() + " Objects?", "Delete All", "Process unmarked images");
 	if(deleteAll)
 		ojDeleteAllObjects();
 	close("Plot_*");
+	close("Collage*");
+	calcMaxFrames();
 	startObjects = ojNObjects();
 	targetFlag = true;//a kind of batchMode for objects
 	if(ojNObjects() == 0)
 		initColumns();
 	
-	nChannels = ojGetImageValue(1, "channels");
 	run("Clear Results");
 	roiManager("reset");
 	print("\\Clear");
 	startTime = getTime;
 	run("Set Measurements...", "area mean centroid");
-	openAllVirtually();
+	openAllVirtually();//17.03.18 0:10
 	nLinkedImgs = ojNImages();
 	nd2Names = newArray(nLinkedImgs);
 	prepTimes = newArray(nLinkedImgs);
 	for(img = 1; img <= ojNImages(); img++){
 		ojHideResults();
-		frameInterval = ojGetImageValue(1, "frameinterval");
 		frames = ojGetImageValue(1, "frames");
 		if(frames == 1) 
 			exit("Hyperstack Error: nFrames == 1");
-		if(frameInterval != ojGetImageValue(img, "frameinterval"))
-			print("Error: frame interval not constant");
 		maxRois = 0;//so we can judge number of of noise particles
 		if(ojFirstObject(img) <= 0){
 			showProgress(-img/ojNImages() + 0.01);
@@ -112,6 +118,7 @@ macro "Analyze Spores [F1]"{
 			currentY = newArray(nSpores);
 			areaPairs = newArray(nSpores);
 			grayPairs = newArray(nSpores);
+			fluorPairs = newArray(nSpores);
 			lifeStage = newArray(nSpores);
 			BRIGHT=0; DARK=1; LOST=2;//life stages
 		
@@ -119,7 +126,7 @@ macro "Analyze Spores [F1]"{
 				currentX[spore] = getResult("X", spore)/pxWidth;
 				currentY[spore] = getResult("Y", spore)/pxWidth;
 				if(targetFlag) ojSetTarget("image=" + img);
-				if(targetFlag) ojSetTarget("slice=1");
+				//if(targetFlag) ojSetTarget("slice=1");
 				ojSwitchToItem("Bright");
 				ojSetMarker(currentX[spore], currentY[spore]);
 				ojCloseObject();
@@ -133,12 +140,17 @@ macro "Analyze Spores [F1]"{
 				makeOval(currentX[spore] -peakRad, currentY[spore] -peakRad, peakRad*2, peakRad*2);//measure gray value
 				getRawStatistics(area, gray);
 				grayPairs[spore] = "0 " + d2s(gray, -3) + ";";// first starts with frame: t= 0
+				if(n_channels == 2){
+					fl = getFluorescence(thisObj, currentX[spore], currentY[spore]);
+					fluorPairs[spore] = "0 " + d2s(fl, -3) + ";";
+				}
+
 			}
 			objIndexes = split(objIndexes);//strings
 			for(jj = 0; jj < objIndexes.length; jj++){
 				objIndexes[jj] = parseInt(objIndexes[jj]);//numbers
 			}	
-			nFrames = nSlices/nChannels;
+			nFrames = nSlices/n_channels;
 			chn = 1;
 
 //====== Frame >= 2  
@@ -148,15 +160,18 @@ macro "Analyze Spores [F1]"{
 //- update 'lifeStage' status per spore BRIGHT, DARK or LOST
 			prevArea = newArray(ojNObjects());//detect abrupt growth or shrink
 			for(frame = 2; frame <= nFrames; frame++){//value pairs per spore
-				slc = (frame - 1) * nChannels + chn;
-				frameTime = (frame -1) * frameInterval;//start with time=0
+				slc = (frame - 1) * n_channels + chn;
+//				print("slice=", slc);
+				frameTime = (frame -1) * frame_Interval;//start with time=0
 				checkCapsLock();			
 				showProgress(-frame/nFrames);
 				setSlice(slc);
 				if(targetFlag) ojSetTarget("image=" + img);
-				if(targetFlag) ojSetTarget("slice=" + slc);
+				if(targetFlag) ojSetTarget("slice=1");
+				if(targetFlag) ojSetTarget("channel=1");
+				if(targetFlag) ojSetTarget("frame=" + frame);
 				
-//======  Bright Particles in Frame >= 2
+				//======  Bright Particles in Frame >= 2
 				setThreshold(stillBright, 1e6);
 				roiManager("reset");
 				run("Select None");
@@ -194,15 +209,19 @@ macro "Analyze Spores [F1]"{
 							ojOpenObject(obj);
 							ojSwitchToItem("Bright");
 							ojSetMarker(currentX[spore], currentY[spore]);
-							ojCloseObject();	
-													}
+							ojCloseObject();
+							if(n_channels == 2){	
+								fl = getFluorescence(obj, currentX[spore], currentY[spore]);
+								fluorPairs[spore] = fluorPairs[spore] + "" + d2s(frameTime, -3) + " " + d2s(fl, -3) + ";";
+							}
+						}
 						else if(lifeStage[spore] == BRIGHT){
 							lifeStage[spore] = DARK; //bright-dark transition
 						}
 					}
 				}
 
-//======  Dark Particles in Frame >= 2
+				//======  Dark Particles in Frame >= 2
 				if(isNaN(parseInt(darkThr)))
 					setAutoThreshold(darkThr);//string for auto-threshold, e.eg. "Default"
 				else
@@ -268,6 +287,10 @@ macro "Analyze Spores [F1]"{
 									if(!transitionFinished){
 										makeOval(currentX[spore] -peakRad, currentY[spore] -peakRad, peakRad*2, peakRad *2);//measure gray value				
 										getRawStatistics(dummyArea, thisMean);
+										if(n_channels == 2){
+											fl = getFluorescence(obj, currentX[spore], currentY[spore]);
+											fluorPairs[spore] = fluorPairs[spore] + "" + d2s(frameTime, -3) + " " + d2s(fl, -3) + ";";
+										}
 									}
 									else
 										thisMean = getResult("Mean", closestRoi);
@@ -290,6 +313,7 @@ macro "Analyze Spores [F1]"{
 				obj= objIndexes[spore];
 				ojSetResult("AreaPairs", obj, areaPairs[spore]);
 				ojSetResult("GrayPairs", obj, grayPairs[spore]);
+				ojSetResult("FluorPairs", obj, fluorPairs[spore]);
 			}
 
 			run("Select None");
@@ -298,8 +322,8 @@ macro "Analyze Spores [F1]"{
 			if(targetFlag) ojSetTarget("exit");
 			setSlice(1);
 			ojSetTool(0);
-			makeCollectivePlot(1, img);
-			makeCollectivePlot(0, img);	
+			for(plot = 0; plot < n_channels +1; plot++)
+				makeCollectivePlot(plot, -1);
 		}//if ojFirstObject <= 0
 		print("maxRois = ", maxRois);//indicate excessive noise particles
 	}// for (img=1
@@ -308,8 +332,10 @@ macro "Analyze Spores [F1]"{
 	beep;
 	msg = " " + (ojNObjects() - startObjects) + " spores analyzed in " + d2s((getTime - startTime)/60e3, 1) + " min";
 	msg += "\n \nShow Plots in Navigation Mode?";
-	makeCollectivePlot(1, -1);
-	makeCollectivePlot(0, -1);
+	for(plot = 0; plot < n_channels +1; plot++)
+		makeCollectivePlot(plot, -1);
+
+
 	setBatchMode("exit and display");//28.03.18 23:50	
 	ojSelectObject(0);
 	if(getBoolean(msg))
@@ -317,9 +343,11 @@ macro "Analyze Spores [F1]"{
 }//===== End Analyze Spores
 
 //Re-builds two collective plots using 'pairs' with manual entries in ObjectJ Results
-macro "Plot Growth and Germination [F2]"{
-	makeCollectivePlot(1, -1);//-1 = include all images
-	makeCollectivePlot(0, -1);
+macro "Create Plots [F2]"{
+	calcMaxFrames();
+	for(plot = 0; plot < n_channels +1; plot++)
+		makeCollectivePlot(plot, -1);
+
 	showMessageWithCancel("Show Plots in Navigation Mode?");
 	ojSelectObject(0);
 	activateNavigation();
@@ -367,9 +395,9 @@ function checkCapsLock(){
 //Create new Plot-Stack if img==1, otherwise append plots to existing stack.
 function makeCollectivePlot(plot, img){//all images if img=-1
 	setFont("SansSerif", 12, "antiliased bold");
-	yMinLimits = newArray(plotAreaMin, 0);
-	yMaxLimits = newArray(plotAreaMax, plotGrayMax);
-	legends = split("log(2, Area [um]);Brightness", ";");
+	yMinLimits = newArray(plotAreaMin, 0, 0);
+	yMaxLimits = newArray(plotAreaMax, plotGrayMax, plotFlMax);
+	legends = split("log(2, Area [um]);Brightness;Fluorescence", ";");
 	if(!n_debug)
 		setBatchMode(true);
 	title = plotTitles[plot];	
@@ -398,6 +426,10 @@ function makeCollectivePlot(plot, img){//all images if img=-1
 		if(plot == 1){ // "Germination"
 			xx = extractArray("GrayPairs", obj, 0);
 			yy = extractArray("GrayPairs", obj, 1);
+		}
+		if(plot == 2){ // "Fluor Ch2"
+			xx = extractArray("FluorPairs", obj, 0);
+			yy = extractArray("FluorPairs", obj, 1);
 		}
 		len = xx.length;
 		yMin= yMinLimits[plot];
@@ -697,7 +729,7 @@ function calcAndPaintAllBursts(){
 function onePlotToClip(plotX, plotY, yMin, yMax){
 		color = "blue";			
 		Plot.create("tmp-", "Time [min]", yLegend);
-		Plot.setFrameSize(550, 250);
+		Plot.setFrameSize(550, 230);
  		Plot.setLimits(0, xLimit, yMin, yMax);
 		Plot.setColor(color);
 		Plot.add("line", plotX, plotY);
@@ -760,7 +792,7 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	batchFlag = true;
 	plotTitle = getTitle;
 	clickedID = getImageID;//so we can return
-	if(plotTitle != "Plot_Germination" && plotTitle != "Plot_Growth"){
+	if(!startsWith(plotTitle, "Plot_")){
 		ojSetTool(0);
 		beep;exit;
 	}
@@ -776,18 +808,21 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	img = ojOwnerIndex(obj);
 	ojShowImage(img);///////////////////
 	if(!n_debug)
-		setBatchMode(true);//synchronize both begin
-	navTitles = split("Plot_Germination Plot_Growth");
+		setBatchMode(true);//synchronize both: begin
+	navTitles = Array.copy(plotTitles);
+	for(jj = 0; jj < navTitles.length; jj++)
+		navTitles[jj] = "Plot_" + navTitles[jj];
+
 	slc = getSliceNumber;
-	for(jj = 0; jj <2; jj++){
-		if(isOpen(navTitles[jj])){
+	for(jj = 0; jj < navTitles.length; jj++){
+		if(isOpen("Plot_" + navTitles[jj])){
 			selectImage(navTitles[jj]);
 			setSlice(z+1);
 		}
 	}
 	if(!n_debug)
 		setBatchMode(false);
-	selectImage(plotTitle);//synchronize both end
+	selectImage(plotTitle);//synchronize both: end
 
 	leftButton=16;
 	rightButton=4;
@@ -801,50 +836,53 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	if (obj > ojNObjects()) 
 		return;
 	ojShowImage(img);
-	frameInterval = ojGetImageValue(img, "frameinterval");
-	//frameInterval = Stack.getFrameInterval();
+	
 	stackID = getImageID;
  	Stack.getDimensions(dummy, dummy, nChannels, numSlices, nFrames);
 	xc = ojXPos(1);
 	yc = ojYPos(1);
-	ojZoom(2, xc, yc);//zoom at factor 2
+	ojZoom(navZoom, xc, yc);//zoom at factor "navZoom"
 	makeOval(xc - 30, yc - 30, 60, 60);
 	selectImage(plotID);
  	if(!n_debug)
 		setBatchMode(true & batchFlag);
 
+	prevFrame = 0;
 	while (flags&(leftButton)!=0) {
 		getCursorLoc(x, y, z, flags);
 		if (x!=x2 || y!=y2 || z!=z2 || flags!=flags2) {
 			x3 = x; y3 = y;
 			toScaled(x3, y3);
-			frm = round(x3/frameInterval) + 1;
+			frm = round(x3/frame_Interval) + 1;
 			showStatus("frame=" + frm);
 			if (frm < 1) frm = 1;
 			if (frm > nFrames) frm = nFrames;
 			
 			selectImage(stackID);
 			FR=(minOf(frm, nFrames));
-			Stack.setFrame(FR);
+			if(FR != prevFrame){
+				prevFrame = FR;
+				Stack.setFrame(FR);
 			
-			run("Select None");	
-			for(itm = 1; itm <= ojNItems("*"); itm++){
-				ojSelectItem("*", itm);
-				if(ojZPos(1) == getSliceNumber){
-					if(ojNPoints() == 1)
-						makeOval(ojXPos(1) - 22, ojYPos(1) - 22, 44, 44);
-					else{
-						ojItemToRoi();
-						run("Properties... ", "  stroke=magenta width=2");
-						getSelectionBounds(bx, by, bwidth, bheight);
-						ojZoom(2, bx + bwidth/2, by + bheight/2);//zoom at factor 2
+				run("Select None");	
+				for(itm = 1; itm <= ojNItems("*"); itm++){
+					ojSelectItem("*", itm);
+					if(ojZPos(1) == getSliceNumber || ojZPos(1) == (getSliceNumber - nChannels + 1)){// || ojZPos(1) == getSliceNumber - nChannels+1 ){
+						if(ojNPoints() == 1)
+							makeOval(ojXPos(1) - 22, ojYPos(1) - 22, 44, 44);
+						else{
+							ojItemToRoi();
+							run("Properties... ", "  stroke=magenta width=2");
+							getSelectionBounds(bx, by, bwidth, bheight);
+							ojZoom(navZoom, bx + bwidth/2, by + bheight/2);//zoom at factor "navZoom"
+						}
+						break;
 					}
-					break;
 				}
+			
+			
+				updateDisplay;//needed if hyperstack-not working
 			}
-			
-			
-			updateDisplay;//needed if hyperstack-not working
 			selectImage(plotID); 
 		}
 		x2=x; y2=y; z2=z; flags2=flags;
@@ -894,8 +932,9 @@ macro "Qualification..."{
 			ojDeleteObject(obj);
 	}
 	ojRecalculate();
-	makeCollectivePlot(1, -1);
-	makeCollectivePlot(0, -1);
+	for(plot = 0; plot < n_channels +1; plot++)
+		makeCollectivePlot(plot, -1);
+
 }
 
 //different nd2Names (biological repeats) result in different batch numbers (1, 2, 3)
@@ -1048,10 +1087,6 @@ function setSign(signIndex){
 		}
 		Array.show(xx, yy);
 		print("\\Clear");
-		print("hitIndex=", hitIndex);
-		print("x     y:");
-		print(x, y);	
-		print(" theX = " + theX);
 		germX1 = -1;
 		germX2 = -1;
 		if(y > mid){
@@ -1129,7 +1164,7 @@ function extractArray(colTitle, obj, index){
 //ObjectJ result columns are created from scratch
 function initColumns(){
 	ojDeleteColumn("*");
- 	ojInitTextColumn("nd2Name File AreaPairs GrayPairs");
+ 	ojInitTextColumn("nd2Name File AreaPairs GrayPairs FluorPairs");
  	ojInitColumn("Batch PrepTime T1 T2 TD Germ1 Germ2 Burst BurstM FirstDiv Q x y");
  	ojSetColumnProperty("T1 T2 TD Germ1 Germ2 Burst  BurstM ", "digits", 1);
 	ojSetColumnProperty("Batch PrepTime Q x y", "digits", 0);
@@ -1177,15 +1212,16 @@ function zoomTo(obj){
 	ojShowObject(obj);
 	xc = ojXPos(1);
 	yc = ojYPos(1);
-	ojZoom(2, xc, yc);//zoom at factor 2
+	ojZoom(navZoom, xc, yc);//zoom at factor 2
 	makeOval(xc - 30, yc - 30, 60, 60);
 }
 
 macro "Activate Navigation [N]"{
-	if(!isOpen("Plot_Germination") && !isOpen("Plot_Growth")){
+	calcMaxFrames();
+	if(!isOpen("Plot_Germination") || !isOpen("Plot_Growth")|| !isOpen("Plot_Fluor")){
 		showMessageWithCancel("Recreate Plot and Germination Plots?");
-		makeCollectivePlot(1, -1);//-1 = include all images
-		makeCollectivePlot(0, -1);
+		for(plot = 0; plot < n_channels +1; plot++)
+			makeCollectivePlot(plot, -1);
 		if(!n_debug)
 			setBatchMode("exit and display");
 	}
@@ -1197,10 +1233,20 @@ macro "Activate Navigation [N]"{
 function activateNavigation(){
 	setBatchMode("exit and display");
 	obj = ojSelectedObject();
+	
 	if(isOpen("Plot_Germination")){
 		selectWindow("Plot_Germination");
 		run("Select None");
-		setLocation(screenWidth-720, 22);
+		setLocation(screenWidth-720, 22 +350);
+		if(obj > 0 && obj < nSlices){
+			setSlice(obj);
+		}
+	}
+	
+	if(isOpen("Plot_Fluor")){
+		selectWindow("Plot_Fluor");
+		run("Select None");
+		setLocation(screenWidth-720, 22 );
 		if(obj > 0 && obj < nSlices){
 			setSlice(obj);
 		}
@@ -1208,10 +1254,163 @@ function activateNavigation(){
 	if(isOpen("Plot_Growth")){
 		selectWindow("Plot_Growth");
 		run("Select None");
-		setLocation(screenWidth-720, 392);
+		setLocation(screenWidth-720, 22 +700);
 		if(obj > 0 && obj < nSlices){
 			setSlice(obj);
 		}
 	}
 	ojSetTool(-101);//N-tool
 }
+
+function getFluorescence(obj, x, y){
+	Stack.getPosition(thisChn, thisSlc, thisFrm);
+	Stack.setChannel(2)
+	makeOval(x - fluorRad, y - fluorRad, fluorRad*2, fluorRad*2);
+	List.setMeasurements;
+	run("Select None");
+	mean = List.getValue("Mean");
+	mode = List.getValue("Mode");
+	area = List.getValue("Area");
+	fl = area*(mean-mode);
+	Stack.setChannel(1)
+	return fl;
+}
+
+function calcMaxFrames(){
+
+	maxFrames = 0;
+	for(img = 1; img <= ojNImages(); img++){
+		if (img == 1)		
+		fi = ojGetImageValue(img, "frameinterval");
+		chns = ojGetImageValue(img, "channels");
+		
+		if(img == 1){
+			frame_Interval = fi;
+			n_channels = chns;
+		}
+		if (abs(frame_Interval - fi) > 0.01)
+			exit("Images have different frame intervals");
+		if (chns != n_channels)
+			exit("Images have different number of channels");
+		frames = ojGetImageValue(img, "frames");
+		maxFrames = maxOf(maxFrames, frames);
+	}
+	xLimit = maxFrames * frame_Interval;	
+}
+
+macro "Collage [F8]"{
+	calcMaxFrames();
+	if(n_channels !=2)
+		exit("Only available in 2-channel stacks");
+	setBatchMode(true);
+	close("Collage");
+	left = 50;
+	top = 0;
+	kk = 30; //chunk 30 px
+	height = ojNObjects() * 2 * kk + 100;
+	width = maxFrames * kk + 50;
+	newImage("Collage", "16-bit black", width, height, 1);
+	Overlay.drawString("", 0, 0, 0.0);
+	for(img = 1; img <= ojNImages(); img++){
+		ojShowImage(img);
+		setBatchMode("hide");
+		for(obj = ojFirstObject(img); obj <= ojLastObject(img); obj++){
+			if(obj%5 == 0){
+				for(frm = 0; frm < 77; frm+=2)
+					Overlay.drawString(d2s(frm * frame_Interval, 0), frm * kk  + 54, top + 22, 0.0);
+				top += 36;
+			}
+			ojShowObject(obj);
+			showProgress(obj/ojNObjects());
+			srcID = getImageID;
+			Overlay.drawString("" + obj, 5, top + 14, 0.0);
+
+			for(itm = 1; itm <= ojNItems("*"); itm++){
+				selectImage(srcID);
+				ojSelectItem("*", itm);
+				x = ojXPos(1);
+				y = ojYPos(1);
+				z = ojZPos(1);
+				setSlice(z);
+				iName = ojGetItemName();
+				if(iName == "Contour"){
+					ojItemToRoi();
+					getSelectionBounds(bx, by, bw, bh);
+					x = bx + bw/2;
+					y = by + bh/2;
+				}
+				makeRectangle(x - kk/2, y- kk/2, kk, kk);
+				run("Copy");//phC
+				selectImage("Collage");
+				makeRectangle(left, top, kk, kk);
+				run("Paste");
+				run("Divide...", "value=10");
+				selectImage(srcID);
+				setSlice(z+1);//fluor
+				run("Copy");
+				selectImage("Collage");
+				makeRectangle(left, top + kk, kk, kk);
+				run("Paste");
+				left += kk;
+			}
+			left = 50;
+			top = top +kk*2 + 8;
+		}
+		ojShowImage(img);
+	}
+	selectImage("Collage");
+	setBatchMode("show");
+	run("Select None");
+	run("Enhance Contrast", "saturated=0.35");
+	Overlay.show();
+	setOption("changes", false);
+}
+
+
+macro "Create Tables [F9]"{
+	calcMaxFrames();
+	close("Pairs.txt");
+	tblTitles = split("AreaPairs GrayPairs FluorPairs");
+	digits = newArray(2,0,2);
+	for(tableNo = 0; tableNo < n_channels + 1; tableNo++){
+		titleOj = tblTitles[tableNo];
+		nColumns = 0;
+		for(obj = 1; obj <= ojNObjects(); obj++){
+			s = ojResultString(titleOj, obj);
+			parts = split(s, ";;");
+			nColumns = maxOf(parts.length, nColumns);
+			if(nColumns == parts.length)
+				longestObj = obj;
+		}
+		Table.create("Results");
+	
+		allXX = extractArray(titleOj, longestObj, 0);
+		for(obj = 1; obj <= ojNObjects(); obj++){
+			Table.set("obj", obj-1, obj);
+			for(col = 0; col < nColumns; col++){
+				tTitle = "T" + d2s(allXX[col], 1);
+				Table.set(tTitle, obj - 1, "");
+			}
+			xx = extractArray(titleOj, obj, 0);
+			yy = extractArray(titleOj, obj, 1);
+			for(col = 0; col < xx.length; col++){
+				tTitle = "T" + d2s(xx[col], 1);
+				Table.set(tTitle, obj - 1, d2s(yy[col],digits[tableNo]));
+			}
+		}
+		Table.update;
+
+		tableName = tblTitles[tableNo] + ".txt";
+		close(tableName);
+		Table.rename(tableName);
+		selectWindow(tableName);
+		setLocation(20, 100 + tableNo * 40);
+
+	}
+	for(tableNo = 0; tableNo < n_channels + 1; tableNo++)
+		selectWindow(tblTitles[tableNo] + ".txt");
+
+}
+
+				
+		
