@@ -1,6 +1,6 @@
 //SporeTrackerX
-//06.06.18 23:36
-//version 1.1k
+//14.06.18 0:26
+//version 1.1m
 var //====== user-defined variables
 	brightFactor = 0.4,//threshold in slice=1 :  default = 0.4 *upperRange;
 	stillBrightFactor = 0.2,//threshold in slice>1:  default = 0.2 *upperRange;
@@ -22,7 +22,7 @@ var //====== user-defined variables
 	lGray = 0xdddddd, white = 0xffffff, slopeColor = 0xccffcc,
 	burstColor = 0xee9900, firstDivColor = 0x889900, t1Color= 0x00aa00, t2Color = 0x00aa00,
 	signColors = newArray(burstColor, firstDivColor, t1Color, t2Color),
-	autoBurst = true,//auto-detect burst
+	autoBurst = false,//auto-detect burst
 	afterBrightCircles = 15,//use circular roi n frames after transition, default=15  
 	afterBrightGrays = 50,//record intensity  n frames after transition, default=50
 	//Plot ranges:
@@ -31,7 +31,7 @@ var //====== user-defined variables
 	plotGrayMax =66000,
 	plotFlMax = 2000,
 	fluorRad = 30, //radius to measure integr. fluorescence in chan 2
-	navZoom = 1, //zoom factor while navigating, default = 2
+	navZoom = 2, //zoom factor while navigating, default = 2
 	n_debug = false,
 
 //automatic:
@@ -344,6 +344,7 @@ macro "Analyze Spores [F1]"{
 
 //Re-builds two collective plots using 'pairs' with manual entries in ObjectJ Results
 macro "Create Plots [F2]"{
+	ojHideResults();
 	calcMaxFrames();
 	for(plot = 0; plot < n_channels +1; plot++)
 		makeCollectivePlot(plot, -1);
@@ -806,7 +807,7 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 	if (obj > ojNObjects()) return;
 	ojSelectObject(obj);
 	img = ojOwnerIndex(obj);
-	ojShowImage(img);///////////////////
+	ojShowImage(img);
 	if(!n_debug)
 		setBatchMode(true);//synchronize both: begin
 	navTitles = Array.copy(plotTitles);
@@ -815,7 +816,7 @@ macro "Navigate Plot Tool - C059o00ffCfffT4c11N" {
 
 	slc = getSliceNumber;
 	for(jj = 0; jj < navTitles.length; jj++){
-		if(isOpen("Plot_" + navTitles[jj])){
+		if(isOpen(navTitles[jj])){
 			selectImage(navTitles[jj]);
 			setSlice(z+1);
 		}
@@ -1036,6 +1037,9 @@ function setSign(signIndex){
 			foundLocX = NaN;
 
 		ojSetResult(sign, obj, foundLocX);
+		if(signIndex == 0)	//burst	
+			ojSetResult("BurstM", obj, foundLocX);
+
 		run("Select All");
 		sign = signNames[signIndex];
 		color = signColors[signIndex];
@@ -1044,10 +1048,8 @@ function setSign(signIndex){
 			unscaledX = foundLocX;
 			unscaledY = foundLocY;
 			toUnscaled(unscaledX, unscaledY);
-			if(signIndex == 0){	//burst	
-				makeRectangle(unscaledX -5, unscaledY -5+1, 10, 10);
-				ojSetResult("BurstM", obj, foundLocX);
-			}
+			if(signIndex == 0)	//burst	
+				makeRectangle(unscaledX -5, unscaledY -5+1, 10, 10);			
 			if(signIndex == 1)	//firstDiv	
 				makeOval(unscaledX -4, unscaledY -6, 8, 12);//was: -7
 			if(signIndex >= 2){	//t1, t2	
@@ -1218,7 +1220,7 @@ function zoomTo(obj){
 
 macro "Activate Navigation [N]"{
 	calcMaxFrames();
-	if(!isOpen("Plot_Germination") || !isOpen("Plot_Growth")|| !isOpen("Plot_Fluor")){
+	if(!isOpen("Plot_Germination") || !isOpen("Plot_Growth")|| (n_channels == 2 && !isOpen("Plot_Fluor"))){
 		showMessageWithCancel("Recreate Plot and Germination Plots?");
 		for(plot = 0; plot < n_channels +1; plot++)
 			makeCollectivePlot(plot, -1);
@@ -1234,30 +1236,33 @@ function activateNavigation(){
 	setBatchMode("exit and display");
 	obj = ojSelectedObject();
 	
-	if(isOpen("Plot_Germination")){
-		selectWindow("Plot_Germination");
-		run("Select None");
-		setLocation(screenWidth-720, 22 +350);
-		if(obj > 0 && obj < nSlices){
-			setSlice(obj);
-		}
-	}
-	
+	top = 40;
 	if(isOpen("Plot_Fluor")){
 		selectWindow("Plot_Fluor");
 		run("Select None");
-		setLocation(screenWidth-720, 22 );
+		setLocation(screenWidth-720, top );
 		if(obj > 0 && obj < nSlices){
 			setSlice(obj);
 		}
+		top += 350;
+	}
+	if(isOpen("Plot_Germination")){
+		selectWindow("Plot_Germination");
+		run("Select None");
+		setLocation(screenWidth-720, top);
+		if(obj > 0 && obj < nSlices){
+			setSlice(obj);
+		}
+		top += 350;
 	}
 	if(isOpen("Plot_Growth")){
 		selectWindow("Plot_Growth");
 		run("Select None");
-		setLocation(screenWidth-720, 22 +700);
+		setLocation(screenWidth-720, top);
 		if(obj > 0 && obj < nSlices){
 			setSlice(obj);
 		}
+		top += 350;
 	}
 	ojSetTool(-101);//N-tool
 }
